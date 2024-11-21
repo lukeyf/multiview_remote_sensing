@@ -10,15 +10,19 @@ library(tidyverse)
 library(here)
 library(cmdstanr) 
 
+# Change here 
+data_path = 'data/multispectral/' 
+output_path = 'output/'
+model_name = 'Hierarchical_Shrinkage' # another option'Reguralized_Horseshoe'
+
 # Read data
-Xtr = read.csv(here('Data','multispectral','X_train.csv'))
-Ytr = read.csv(here('Data','multispectral','Y_train.csv'))
-Xts = read.csv(here('Data','multispectral','X_test.csv'))
-Yts = read.csv(here('Data','multispectral','Y_test.csv'))
+Xtr = read.csv(paste0(data_path,'X_train.csv'))
+Ytr = read.csv(paste0(data_path,'Y_train.csv'))
+Xts = read.csv(paste0(data_path,'X_test.csv'))
+Yts = read.csv(paste0(data_path,'Y_test.csv'))
 
 # Set-up stan
-model_name = 'Hierarchical_Shrinkage' # 'Reguralized_Horseshoe'
-stanfile = here('Code',paste0(model_name,'.stan'))
+stanfile = here(paste0(model_name,'.stan'))
 mod = cmdstan_model(stanfile)
 
 data_list = list(
@@ -62,12 +66,12 @@ for (i in 1:nrow(df_post_w)){
 }
 Yts$post_mean <-rowMeans(y_new_post) |> unname()
 Yts$post_sd <- sqrt(apply(y_new_post, 1, var))
-write.csv(Yts,here("Output",paste0("Y_test_result_",model_name,".csv")))
+write.csv(Yts, paste0(output_path,"Y_test_result_",model_name,".csv"))
 
 y_new_truncated = y_new_post
 y_new_truncated[y_new_post > 1] <- 1 #pi/2
 y_new_truncated[y_new_post < 0] <- 0
-write.csv(y_new_truncated,here("Output",paste0("post_pred_sample_truncated_",model_name,".csv")))
+write.csv(y_new_truncated, paste0(output_path,"post_pred_sample_truncated_",model_name,".csv"))
 
 ## Posteior predictive for training data
 Xw_tr = as.matrix(Xtr)%*%t(as.matrix(df_post_w)) 
@@ -79,12 +83,12 @@ for (i in 1:nrow(df_post_w)){
 }
 Ytr$post_mean <-rowMeans(y_tr_post) |> unname()
 Ytr$post_sd <- sqrt(apply(y_tr_post, 1, var))
-write.csv(Ytr,here("Output",paste0("Y_trainig_result_",model_name,".csv")))
+write.csv(Ytr, paste0(output_path,"Y_trainig_result_",model_name,".csv"))
 
 y_tr_truncated = y_tr_post
 y_tr_truncated[y_tr_post > 1] <- 1 #pi/2
 y_tr_truncated[y_tr_post < 0] <- 0
-write.csv(y_tr_truncated,here("Output",paste0("post_trainig_sample_truncated_",model_name,"_nu3",".csv")))
+write.csv(y_tr_truncated, paste0(output_path,"post_trainig_sample_truncated_",model_name,".csv"))
 
 print(mean(abs(Yts$post_mean-Yts$target)))
 print(mean(abs(Ytr$post_mean-Ytr$target)))

@@ -76,3 +76,8 @@ Arguments
 - `--temporal`: Add this flag to use the temporal mode
 
 This will export data as Numpy arrays in `.npy` files in the output location, which has the shape `(num_samples, 1025)`. The first 1024 columns (i.e `arr[:, :1024]`) is the predicted feature vector from the model, and the last column (i.e `arr[:, 1024]`) is the target. 
+
+## Uncertainty-Aware Regression
+
+### Bayeisan linear regression with hierarchical shrinkage priors and regularised horseshoe prior.
+This [file](modelling/BLR/BLRfit.R) runs the BLR models written in `Stan` using `CmdStan`. To install `CmdStan` and its `R` interface `cmdstanr`, visit [here](https://mc-stan.org/cmdstanr/). 
