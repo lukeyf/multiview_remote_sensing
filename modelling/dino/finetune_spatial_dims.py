@@ -152,41 +152,24 @@ def main(fold, model_name, target, imagery_path, imagery_source, emb_size, batch
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     base_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14').to(device)
-    # # Access the patch embedding layer
-    patch_embed = base_model.patch_embed
+    
+    class BandSelector(nn.Module):
+        def __init__(self):
+            super().__init__()
+            # Define a 1x1 convolution to map 13 channels to 3 channels
+            self.conv = nn.Conv2d(13, 3, kernel_size=1, bias=False)
+            
+            # Initialize all weights to small values
+            nn.init.normal_(self.conv.weight, mean=0.0, std=0.01)
+            
+            # Manually set weights for bands 4, 3, 2 (input channels 3, 2, 1) to 1.0
+            self.conv.weight.data[0, 3] = 1.0  # Output channel 0: Band 4 (input channel 3)
+            self.conv.weight.data[1, 2] = 1.0  # Output channel 1: Band 3 (input channel 2)
+            self.conv.weight.data[2, 1] = 1.0  # Output channel 2: Band 2 (input channel 1)
 
-    # Store the original weights and biases
-    original_weight = patch_embed.proj.weight.data.clone()
-    original_bias = patch_embed.proj.bias.data.clone() if patch_embed.proj.bias is not None else None
-
-    # Create a new Conv2d layer with 13 input channels
-    new_proj = nn.Conv2d(
-        in_channels=13,
-        out_channels=patch_embed.proj.out_channels,
-        kernel_size=patch_embed.proj.kernel_size,
-        stride=patch_embed.proj.stride,
-        padding=patch_embed.proj.padding,
-        bias=patch_embed.proj.bias is not None
-    )
-    import torch.nn.init as init
-    # Initialize the new weights
-    with torch.no_grad():
-        # Copy the pretrained weights for the first 3 channels
-        new_proj.weight[:, 1:4, :, :] = original_weight
-        if original_bias is not None:
-            new_proj.bias = nn.Parameter(original_bias)
-        
-        # Initialize the additional channels
-        if 13 > 3:
-            init.kaiming_normal_(new_proj.weight[:, 4:, :, :], mode='fan_out', nonlinearity='relu')
-            init.kaiming_normal_(new_proj.weight[:, 0, :, :], mode='fan_out', nonlinearity='relu')
-
-    # Replace the old projection layer with the new one
-    patch_embed.proj = new_proj
-
-    # Update the model's patch embedding
-    base_model.patch_embed = patch_embed
-
+        def forward(self, x):
+            return self.conv(x)
+    
     # Move the updated model to the device
     base_model = base_model.to(device)
 
@@ -199,10 +182,12 @@ def main(fold, model_name, target, imagery_path, imagery_source, emb_size, batch
         }, filename)
 
     torch.cuda.empty_cache()
+    projection = BandSelector().to(device)
     class ViTForRegression(nn.Module):
-        def __init__(self, base_model):
+        def __init__(self, base_model, projection):
             super().__init__()
             self.base_model = base_model
+            self.projection = projection
             # Assuming the original model outputs 768 features from the transformer
             self.regression_head = nn.Linear(emb_size, len(predict_target))  # Output one continuous variable
             if sigmoid:
@@ -210,12 +195,12 @@ def main(fold, model_name, target, imagery_path, imagery_source, emb_size, batch
             else:
                 self.activation = ClippedReLU()
         def forward(self, pixel_values):
-            outputs = self.base_model(pixel_values)
+            outputs = self.base_model(self.projection(pixel_values))
             # We use the last hidden state
             return self.activation(self.regression_head(outputs))
 
     print(f"Using {device}")
-    model = ViTForRegression(base_model).to(device)
+    model = ViTForRegression(base_model, projection).to(device)
     best_model = f'modelling/dino/model/{model_name}_{fold}_all_cluster_best_{imagery_source}{target}_.pth'
     last_model = f'modelling/dino/model/{model_name}_{fold}_all_cluster_last_{imagery_source}{target}_.pth'
     if os.path.exists(last_model):

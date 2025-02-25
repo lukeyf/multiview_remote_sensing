@@ -20,7 +20,7 @@ def evaluate(fold, model_name, target = "", use_checkpoint = False, model_not_na
     model_par_dir = r'modelling/dino/model/'
 
     import os
-    best_model = f'{model_name}ms_cat_{fold}_all_cluster_best_{imagery_source}{target}_.pth'
+    best_model = f'{model_name}_{fold}_all_cluster_best_{imagery_source}{target}_.pth'
     checkpoint = os.path.join(model_par_dir, best_model)
 
     print(f"Evaluating fold {fold} with target {target} using checkpoint {checkpoint}")
@@ -102,41 +102,42 @@ def evaluate(fold, model_name, target = "", use_checkpoint = False, model_not_na
         img = (img * 255).astype(np.uint8)
 
         return img
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    base_models = [torch.hub.load('facebookresearch/dinov2', model_name).to(device) for _ in range(4)]
-    class ViTForRegression(nn.Module):
-        def __init__(self, base_models, grouped_bands=[[4, 3, 2], [8, 4, 2], [13, 1, 3], [12, 8, 2]], emb_size=768, output_size=1):
+    class BandSelector(nn.Module):
+        def __init__(self):
             super().__init__()
-            self.base_models = nn.ModuleList(base_models)
-            self.grouped_bands = torch.tensor(grouped_bands) - 1
-            self.cross_attention = nn.MultiheadAttention(embed_dim=emb_size, num_heads=8)
+            # Define a 1x1 convolution to map 13 channels to 3 channels
+            self.conv = nn.Conv2d(13, 3, kernel_size=1, bias=False)
             
-            # Update the input size of the regression head to handle concatenation of 4 embeddings
-            self.regression_head = nn.Linear(emb_size * len(grouped_bands), output_size)
+            # Initialize all weights to small values
+            nn.init.normal_(self.conv.weight, mean=0.0, std=0.01)
+            
+            # Manually set weights for bands 4, 3, 2 (input channels 3, 2, 1) to 1.0
+            self.conv.weight.data[0, 3] = 1.0  # Output channel 0: Band 4 (input channel 3)
+            self.conv.weight.data[1, 2] = 1.0  # Output channel 1: Band 3 (input channel 2)
+            self.conv.weight.data[2, 1] = 1.0  # Output channel 2: Band 2 (input channel 1)
 
-        def forward_encoder(self, pixel_values):
-            # Extract outputs from each base model with specific band groups
-            outputs = [self.base_models[i](pixel_values[:, self.grouped_bands[i], :, :]) for i in range(len(self.base_models))]
-            
-            # Stack and permute outputs for multihead attention
-            outputs = torch.stack(outputs, dim=0)  # Shape: [num_views, batch_size, emb_size]
-            
-            # Apply cross-attention
-            attn_output, _ = self.cross_attention(outputs, outputs, outputs)  # Shape: [num_views, batch_size, emb_size]
-            
-            # Concatenate the attention output across all views
-            concat_output = torch.cat([attn_output[i] for i in range(attn_output.size(0))], dim=-1)  # Shape: [batch_size, emb_size * num_views]
-            
-            return concat_output
-        
+        def forward(self, x):
+            return self.conv(x)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    base_model = torch.hub.load('facebookresearch/dinov2', 'dinov2_vitb14').to(device)
+    projection = BandSelector().to(device)
+    class ViTForRegression(nn.Module):
+        def __init__(self, base_model, projection):
+            super().__init__()
+            self.base_model = base_model
+            self.projection = projection
+            # Assuming the original model outputs 768 features from the transformer
+            self.regression_head = nn.Linear(model_output_dim, target_size)  # Output one continuous variable
+            self.activation = nn.Sigmoid()
         def forward(self, pixel_values):
-            # Extract outputs from each base model with specific band groups
-            concat_output = self.forward_encoder(pixel_values)
-            # Pass through regression head
-            return torch.sigmoid(self.regression_head(concat_output))
-        
-    model = ViTForRegression(base_models, output_size=target_size).to(device)
+            outputs = self.forward_encoder(pixel_values)
+            # We use the last hidden state
+            return self.activation(self.regression_head(outputs))
+        def forward_encoder(self, pixel_values):
+            return self.base_model(self.projection(pixel_values))
+
+    print(f"Using {device}")
+    model = ViTForRegression(base_model, projection).to(device)
     if use_checkpoint:
         state_dict = torch.load(checkpoint)
         model.load_state_dict(state_dict['model_state_dict'])
@@ -210,7 +211,7 @@ def evaluate(fold, model_name, target = "", use_checkpoint = False, model_not_na
     df_X_test = pd.DataFrame(X_test)
     df_y_test = pd.DataFrame(y_test, columns=['target'])
 
-    results_folder = f'modelling/dino/results/split_{mode}{imagery_source}_{fold}/'
+    results_folder = f'modelling/dino/results/split_dims_{mode}{imagery_source}_{fold}/'
     if not os.path.exists(results_folder):
         os.makedirs(results_folder)
     # Save to CSV files

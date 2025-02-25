@@ -12,11 +12,10 @@ from torch.nn import L1Loss, MSELoss
 from torch.optim import Adam
 from torch.utils.data import DataLoader, Dataset
 from tqdm import tqdm
-
 import warnings
 warnings.filterwarnings("ignore")
 from ..util_methods import *
-from . import build_satmae_finetune, build_satmae_temporal_finetune, build_satmae_ms_finetune
+from . import build_satmae_finetune, build_satmae_temporal_finetune
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -61,15 +60,13 @@ def main(args):
         "hv271",
         "v312",
     ]
-    predict_target = ['deprived_sev']
     train_dataset, val_dataset, num_classes = get_datasets(
         args.dhs_path,
         args.imagery_path,
         predict_target,
         temporal=args.temporal,
         landsat=args.landsat,
-        multispectral=True,
-        img_size=args.img_size
+        img_size=args.img_size,
     )
 
     # Set your desired seed
@@ -89,53 +86,22 @@ def main(args):
         num_workers=4,
         persistent_workers=True,
     )
-    if not args.temporal:
-        fold = [c for c in args.dhs_path if c.isdigit()][0]
-    else:
-        fold = 't'
-    num_classes = 1
 
-    if args.temporal:
-        patch_size = 16
-    else:
-        patch_size = 8
     model_args = Namespace(
-        num_classes=num_classes,
+        num_classes=99,
         drop_path=0.1,
         global_pool=False,
-        satmae_type=f"vit_large_patch{patch_size}",
+        satmae_type="vit_large_patch16",
         pretrained_model=args.pretrained_ckpt,
         img_size=args.img_size,
-        patch_size=patch_size,
-        in_chans=13,
     )
     if args.temporal:
         base_model = build_satmae_temporal_finetune(model_args)
     else:
-        base_model = build_satmae_ms_finetune(model_args)
+        base_model = build_satmae_finetune(model_args)  
 
-    
-    class SatMAERegression(nn.Module):
-        def __init__(self, base_model):
-            super().__init__()
-            self.base_model = base_model
-            # Assuming the original model outputs 1024 features from the transformer
-            self.regression_head = nn.Linear(1024, 1)  # Output one continuous variable
-            self.activation = nn.Sigmoid()
-        def forward(self, pixel_values, timestamps=None):
-            if timestamps is not None:
-                outputs = self.base_model.forward_features(pixel_values, timestamps)
-            else:
-                outputs = self.base_model.forward_features(pixel_values)
-            # We use the last hidden state
-            return self.activation(self.regression_head(outputs))
-        def forward_features(self, pixel_values, timestamps=None):
-            if timestamps is not None:
-                return self.base_model.forward_features(pixel_values, timestamps)
-            else:
-                return self.base_model.forward_features(pixel_values)
-    
-    model = SatMAERegression(base_model).to(device)
+    model = base_model.to(device)
+
     # Setup the optimizer
     optimizer = torch.optim.Adam(params=model.parameters(), lr=1e-5, weight_decay=1e-6)
     if args.loss == "l1":
@@ -144,7 +110,7 @@ def main(args):
         loss_fn = MSELoss()
     else:
         raise ValueError("Loss function other than 'l1' or 'l2' not supported")
-    
+
     best_error = np.inf
     curr_patience = args.stopping_patience
 
@@ -162,15 +128,8 @@ def main(args):
             timer_start.record()
 
         for batch in tqdm(train_loader):
-            if args.temporal:
-                images, timestamps, targets = batch
-                images, timestamps, targets = images.to(device),timestamps.to(device), targets.to(device)
-                outputs = model(images, timestamps) 
-            else:
-                images, targets = batch
-                images, targets = images.to(device), targets.to(device)
-                # Forward pass
-                outputs = model(images) 
+            images, targets = batch
+            images, targets = images.to(device), targets.to(device)
 
             if args.enable_profiling:
                 timer_end.record()
@@ -178,6 +137,8 @@ def main(args):
                 loading_time = timer_start.elapsed_time(timer_end)
                 timer_start.record()
 
+            # Forward pass
+            outputs = model(images)
             loss = loss_fn(outputs, targets)
 
             # Backward and optimize
@@ -195,6 +156,7 @@ def main(args):
                 if args.enable_profiling:
                     tb_writer.add_scalar("timer/load", loading_time, iteration)
                     tb_writer.add_scalar("timer/step", step_time, iteration)
+            # break
 
             iteration += 1
 
@@ -204,23 +166,16 @@ def main(args):
         indiv_loss = []
         print("Validating...")
         for batch in tqdm(val_loader):
-            if args.temporal:
-                images, timestamps, targets = batch
-                images, timestamps, targets = images.to(device),timestamps.to(device), targets.to(device)
+            images, targets = batch
+            images, targets = images.to(device), targets.to(device)
 
-                with torch.no_grad():
-                    outputs = model(images, timestamps) 
-            else:
-                images, targets = batch
-                images, targets = images.to(device), targets.to(device)
-                # Forward pass
-
-                with torch.no_grad():
-                    outputs = model(images) 
-
+            # Forward pass
+            with torch.no_grad():
+                outputs = model(images)
             batch_loss = loss_fn(outputs, targets)
             val_loss.append(batch_loss.item())
             indiv_loss.append(torch.mean(torch.abs(outputs - targets), axis=0))
+            break
 
         # Compute mean validation loss
         mean_val_loss = np.mean(val_loss)
@@ -241,7 +196,7 @@ def main(args):
                 optimizer,
                 epoch,
                 mean_val_loss,
-                filename=os.path.join(outdir, f"model_{fold}_best_nl.pth"),
+                filename=os.path.join(outdir, "model_2020_best_nl.pth"),
             )
             best_error = mean_val_loss
         print("Output dir:", outdir)
@@ -256,7 +211,7 @@ def main(args):
             optimizer,
             epoch,
             mean_val_loss,
-            filename=os.path.join(outdir, f"model_{fold}_last_nl.pth"),
+            filename=os.path.join(outdir, "model_2020_last_nl.pth"),
         )
 
         if stopping:
@@ -269,7 +224,7 @@ if __name__ == "__main__":
     parser.add_argument("--imagery_path", type=str, default="/data/esa_10")
     parser.add_argument("--dhs_path", type=str)
     parser.add_argument("--output_path", type=str, default="/data/output")
-    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--batch_size", type=int, default=32)
     parser.add_argument("--random_seed", type=int, default=42)
     parser.add_argument("--sentinel", action="store_false", dest="landsat")
     parser.add_argument("--temporal", action="store_true")

@@ -69,7 +69,6 @@ class GroupChannelsVisionTransformer(timm.models.vision_transformer.VisionTransf
         # add channel embed
         channel_embed = self.channel_embed.unsqueeze(2)  # (1, c, 1, cD)
         pos_embed = self.pos_embed[:, 1:, :].unsqueeze(1)  # (1, 1, L, pD)
-
         # Channel embed same across (x,y) position, and pos embed same across channel (c)
         channel_embed = channel_embed.expand(-1, -1, pos_embed.shape[2], -1)  # (1, c, L, cD)
         pos_embed = pos_embed.expand(-1, channel_embed.shape[1], -1, -1)  # (1, c, L, pD)
